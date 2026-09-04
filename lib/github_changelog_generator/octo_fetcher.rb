@@ -1,8 +1,6 @@
 # frozen_string_literal: true
 
 require "tmpdir"
-require "retriable"
-require "set"
 require "async"
 require "async/barrier"
 require "async/semaphore"
@@ -60,7 +58,7 @@ module GitHubChangelogGenerator
         end
 
         builder.use Octokit::Response::RaiseError
-        builder.adapter :async_http
+        builder.adapter Faraday.default_adapter
       end
     end
 
@@ -96,15 +94,23 @@ module GitHubChangelogGenerator
     # Fetch all tags from repo
     #
     # @return [Array <Hash>] array of tags
-    def get_all_tags
+    def fetch_all_tags
       print "Fetching tags...\r" if @options[:verbose]
 
       check_github_response { github_fetch_tags }
     end
 
+    def get_all_tags # rubocop:disable Naming/AccessorMethodName
+      warn("[DEPRECATED] GitHubChangelogGenerator::OctoFetcher#get_all_tags is deprecated; use fetch_all_tags instead.")
+      fetch_all_tags
+    end
+
     # Returns the number of pages for a API call
     #
     # @return [Integer] number of pages for this API call in total
+    # @param [Object] request_options
+    # @param [Object] method
+    # @param [Object] client
     def calculate_pages(client, method, request_options)
       # Makes the first API call so that we can call last_response
       check_github_response do
@@ -161,7 +167,7 @@ Make sure, that you push tags to remote repo via 'git push --tags'"
       page_i = 0
       count_pages = calculate_pages(client, "issues", closed_pr_options)
 
-      iterate_pages(client, "issues", closed_pr_options) do |new_issues|
+      iterate_pages(client, "issues", **closed_pr_options) do |new_issues|
         page_i += PER_PAGE_NUMBER
         print_in_same_line("Fetching issues... #{page_i}/#{count_pages * PER_PAGE_NUMBER}")
         issues.concat(new_issues)
@@ -185,7 +191,7 @@ Make sure, that you push tags to remote repo via 'git push --tags'"
       page_i = 0
       count_pages = calculate_pages(client, "pull_requests", options)
 
-      iterate_pages(client, "pull_requests", options) do |new_pr|
+      iterate_pages(client, "pull_requests", **options) do |new_pr|
         page_i += PER_PAGE_NUMBER
         log_string = "Fetching merged dates... #{page_i}/#{count_pages * PER_PAGE_NUMBER}"
         print_in_same_line(log_string)
@@ -202,7 +208,8 @@ Make sure, that you push tags to remote repo via 'git push --tags'"
     # @param [Array] issues
     # @return [Void]
     def fetch_events_async(issues)
-      i = 0
+      fetched_count = 0
+      mutex = Mutex.new
       # Add accept option explicitly for disabling the warning of preview API.
       preview = { accept: Octokit::Preview::PREVIEW_TYPES[:project_card_events] }
 
@@ -215,12 +222,12 @@ Make sure, that you push tags to remote repo via 'git push --tags'"
         issues.each do |issue|
           semaphore.async do
             issue["events"] = []
-            iterate_pages(client, "issue_events", issue["number"], preview) do |new_event|
+            iterate_pages(client, "issue_events", issue["number"], **preview) do |new_event|
               issue["events"].concat(new_event)
             end
             issue["events"] = issue["events"].map { |event| stringify_keys_deep(event.to_hash) }
-            print_in_same_line("Fetching events for issues and PR: #{i + 1}/#{issues.count}")
-            i += 1
+            current = mutex.synchronize { fetched_count += 1 }
+            print_in_same_line("Fetching events for issues and PR: #{current}/#{issues.count}")
           end
         end
 
@@ -230,7 +237,7 @@ Make sure, that you push tags to remote repo via 'git push --tags'"
         print_empty_line
       end
 
-      Helper.log.info "Fetching events for issues and PR: #{i}"
+      Helper.log.info "Fetching events for issues and PR: #{fetched_count}"
     end
 
     # Fetch comments for PRs and add them to "comments"
@@ -303,12 +310,13 @@ Make sure, that you push tags to remote repo via 'git push --tags'"
           barrier = Async::Barrier.new
           semaphore = Async::Semaphore.new(MAXIMUM_CONNECTIONS, parent: barrier)
 
+          branch = @options[:release_branch] || default_branch
           if (since_commit = @options[:since_commit])
-            iterate_pages(client, "commits_since", since_commit, parent: semaphore) do |new_commits|
+            iterate_pages(client, "commits_since", since_commit, branch, parent: semaphore) do |new_commits|
               @commits.concat(new_commits)
             end
           else
-            iterate_pages(client, "commits", parent: semaphore) do |new_commits|
+            iterate_pages(client, "commits", branch, parent: semaphore) do |new_commits|
               @commits.concat(new_commits)
             end
           end
@@ -335,11 +343,21 @@ Make sure, that you push tags to remote repo via 'git push --tags'"
       @default_branch ||= client.repository(user_project)[:default_branch]
     end
 
+    # @param [String] name
+    # @return [Array<String>]
     def commits_in_branch(name)
-      @branches ||= client.branches(user_project).map { |branch| [branch[:name], branch] }.to_h
+      @branches ||= begin
+        all_branches = {}
+        iterate_pages(client, "branches") do |branches|
+          branches.each { |branch| all_branches[branch[:name]] = branch }
+        end
+        all_branches
+      end
 
       if (branch = @branches[name])
         commits_in_tag(branch[:commit][:sha])
+      else
+        []
       end
     end
 
@@ -347,7 +365,7 @@ Make sure, that you push tags to remote repo via 'git push --tags'"
     # "shas_in_tag"
     #
     # @param [Array] tags The array of tags.
-    # @return [Nil] No return; tags are updated in-place.
+    # @return void
     def fetch_tag_shas(tags)
       # Reverse the tags array to gain max benefit from the @commits_in_tag_cache
       tags.reverse_each do |tag|
@@ -357,6 +375,8 @@ Make sure, that you push tags to remote repo via 'git push --tags'"
 
     private
 
+    # @param [Set] shas
+    # @param [Object] sha
     def commits_in_tag(sha, shas = Set.new)
       # Reduce multiple runs for the same tag
       return @commits_in_tag_cache[sha] if @commits_in_tag_cache.key?(sha)
@@ -367,9 +387,15 @@ Make sure, that you push tags to remote repo via 'git push --tags'"
       queue = [current]
       while queue.any?
         commit = queue.shift
-        # If we've already processed this sha, just grab it's parents from the cache
         if @commits_in_tag_cache.key?(commit[:sha])
+          # If we've already processed this sha in a previous run, just grab
+          # its parents from the cache
           shas.merge(@commits_in_tag_cache[commit[:sha]])
+        elsif shas.include?(commit[:sha])
+          # If we've already processed this sha in the current run, stop there
+          # for the current commit because its parents have already been
+          # queued/processed. Jump to the next queued commit.
+          next
         else
           shas.add(commit[:sha])
           commit[:parents].each do |p|
@@ -382,6 +408,7 @@ Make sure, that you push tags to remote repo via 'git push --tags'"
       shas
     end
 
+    # @param [Object] indata
     def stringify_keys_deep(indata)
       case indata
       when Array
@@ -405,10 +432,13 @@ Make sure, that you push tags to remote repo via 'git push --tags'"
     #
     # @param [Octokit::Client] client
     # @param [String] method (eg. 'tags')
+    # @param [Array] arguments
+    # @param [Async::Semaphore] parent
     #
     # @yield [Sawyer::Resource] An OctoKit-provided response (which can be empty)
     #
     # @return [void]
+    # @param [Hash] options
     def iterate_pages(client, method, *arguments, parent: nil, **options)
       options = DEFAULT_REQUEST_OPTIONS.merge(options)
 
@@ -442,10 +472,22 @@ Make sure, that you push tags to remote repo via 'git push --tags'"
     # This is wrapper with rescue block
     #
     # @return [Object] returns exactly the same, what you put in the block, but wrap it with begin-rescue block
-    def check_github_response(&block)
-      Retriable.retriable(retry_options, &block)
+    # @param [Proc] block
+    def check_github_response
+      yield
     rescue MovedPermanentlyError => e
       fail_with_message(e, "The repository has moved, update your configuration")
+    rescue Octokit::TooManyRequests => e
+      resets_in = client.rate_limit.resets_in
+      Helper.log.error("#{e.class} #{e.message}; sleeping for #{resets_in}s...")
+
+      if (task = Async::Task.current?)
+        task.sleep(resets_in)
+      else
+        sleep(resets_in)
+      end
+
+      retry
     rescue Octokit::Forbidden => e
       fail_with_message(e, "Exceeded retry limit")
     rescue Octokit::Unauthorized => e
@@ -453,36 +495,14 @@ Make sure, that you push tags to remote repo via 'git push --tags'"
     end
 
     # Presents the exception, and the aborts with the message.
+    # @param [Object] message
+    # @param [Object] error
     def fail_with_message(error, message)
       Helper.log.error("#{error.class}: #{error.message}")
       sys_abort(message)
     end
 
-    # Exponential backoff
-    def retry_options
-      {
-        on: [Octokit::Forbidden],
-        tries: MAX_FORBIDDEN_RETRIES,
-        base_interval: sleep_base_interval,
-        multiplier: 1.0,
-        rand_factor: 0.0,
-        on_retry: retry_callback
-      }
-    end
-
-    def sleep_base_interval
-      1.0
-    end
-
-    def retry_callback
-      proc do |exception, try, elapsed_time, next_interval|
-        Helper.log.warn("RETRY - #{exception.class}: '#{exception.message}'")
-        Helper.log.warn("#{try} tries in #{elapsed_time} seconds and #{next_interval} seconds until the next try")
-        Helper.log.warn GH_RATE_LIMIT_EXCEEDED_MSG
-        Helper.log.warn(client.rate_limit)
-      end
-    end
-
+    # @param [Object] msg
     def sys_abort(msg)
       abort(msg)
     end
@@ -511,7 +531,7 @@ Make sure, that you push tags to remote repo via 'git push --tags'"
       env_var
     end
 
-    # @return [String] helper to return Github "user/project"
+    # @return [String] helper to return GitHub "user/project"
     def user_project
       "#{@options[:user]}/#{@options[:project]}"
     end

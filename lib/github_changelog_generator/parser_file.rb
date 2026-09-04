@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "pathname"
-
 module GitHubChangelogGenerator
   ParserError = Class.new(StandardError)
 
@@ -22,28 +20,21 @@ module GitHubChangelogGenerator
   #
   class ParserFile
     # @param options [Hash] options to be configured from file contents
-    # @param file [nil,IO] configuration file handle, defaults to opening `.github_changelog_generator`
-    def initialize(options, file = open_settings_file)
+    # @param io [nil, IO] configuration file handle
+    def initialize(options, io = nil)
       @options = options
-      @file = file
+      @io = io
     end
 
     # Sets options using configuration file content
     def parse!
-      return unless @file
+      return unless @io
 
-      @file.each_with_index { |line, i| parse_line!(line, i + 1) }
-      @file.close
+      @io.each_with_index { |line, i| parse_line!(line, i + 1) }
+      @io.close
     end
 
     private
-
-    FILENAME = ".github_changelog_generator"
-
-    def open_settings_file
-      path = Pathname(File.expand_path(FILENAME))
-      File.open(path) if path.exist?
-    end
 
     def parse_line!(line, line_number)
       return if non_configuration_line?(line)

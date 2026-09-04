@@ -48,11 +48,10 @@ module GitHubChangelogGenerator
       prs_left = associate_tagged_prs(tags, prs, total)
       prs_left = associate_release_branch_prs(prs_left, total)
       prs_left = associate_rebase_comment_prs(tags, prs_left, total) if prs_left.any?
-      # PRs in prs_left will be untagged, not in release branch, and not
-      # rebased. They should not be included in the changelog as they probably
-      # have been merged to a branch other than the release branch.
-      @pull_requests -= prs_left
+
       Helper.log.info "Associating PRs with tags: #{total}/#{total}"
+
+      prs_left
     end
 
     # Associate merged PRs by the merge SHA contained in each tag. If the
@@ -80,7 +79,7 @@ module GitHubChangelogGenerator
             print("Associating PRs with tags: #{i}/#{total}\r") if @options[:verbose]
           end
         else
-          # Either there were no events or no merged event. Github's api can be
+          # Either there were no events or no merged event. GitHub's api can be
           # weird like that apparently. Check for a rebased comment before erroring.
           no_events_pr = associate_rebase_comment_prs(tags, [pr], total)
           raise StandardError, "No merge sha found for PR #{pr['number']} via the GitHub API" unless no_events_pr.empty?
@@ -104,7 +103,7 @@ module GitHubChangelogGenerator
         i = total - prs_left.count
         prs_left.reject do |pr|
           found = false
-          if pr["events"] && (event = pr["events"].find { |e| e["event"] == "merged" }) && sha_in_release_branch(event["commit_id"])
+          if pr["events"] && (event = pr["events"].find { |e| e["event"] == "merged" }) && sha_in_release_branch?(event["commit_id"])
             found = true
             i += 1
             print("Associating PRs with tags: #{i}/#{total}\r") if @options[:verbose]
@@ -137,7 +136,7 @@ module GitHubChangelogGenerator
             pr["first_occurring_tag"] = oldest_tag["name"]
             found = true
             i += 1
-          elsif sha_in_release_branch(rebased_sha)
+          elsif sha_in_release_branch?(rebased_sha)
             found = true
             i += 1
           else
@@ -154,15 +153,15 @@ module GitHubChangelogGenerator
     # Fill :actual_date parameter of specified issue by closed date of the commit, if it was closed by commit.
     # @param [Hash] issue
     def find_closed_date_by_commit(issue)
-      unless issue["events"].nil?
-        # if it's PR -> then find "merged event", in case of usual issue -> fond closed date
-        compare_string = issue["merged_at"].nil? ? "closed" : "merged"
-        # reverse! - to find latest closed event. (event goes in date order)
-        issue["events"].reverse!.each do |event|
-          if event["event"].eql? compare_string
-            set_date_from_event(event, issue)
-            break
-          end
+      return if issue["events"].nil?
+
+      # if it's PR -> then find "merged event", in case of usual issue -> found closed date
+      compare_string = issue["merged_at"].nil? ? "closed" : "merged"
+      # reverse! - to find latest closed event. (event goes in date order)
+      issue["events"].reverse!.each do |event|
+        if event["event"] == compare_string
+          set_date_from_event(event, issue)
+          break
         end
       end
       # TODO: assert issues, that remain without 'actual_date' hash for some reason.
@@ -175,17 +174,16 @@ module GitHubChangelogGenerator
     def set_date_from_event(event, issue)
       if event["commit_id"].nil?
         issue["actual_date"] = issue["closed_at"]
-      else
-        begin
-          commit = @fetcher.fetch_commit(event["commit_id"])
-          issue["actual_date"] = commit["commit"]["author"]["date"]
-
-          # issue['actual_date'] = commit['author']['date']
-        rescue StandardError
-          puts "Warning: Can't fetch commit #{event['commit_id']}. It is probably referenced from another repo."
-          issue["actual_date"] = issue["closed_at"]
-        end
+        return
       end
+
+      commit = @fetcher.fetch_commit(event["commit_id"])
+      issue["actual_date"] = commit["commit"]["author"]["date"]
+
+      # issue['actual_date'] = commit['author']['date']
+    rescue StandardError
+      puts "Warning: Can't fetch commit #{event['commit_id']}. It is probably referenced from another repo."
+      issue["actual_date"] = issue["closed_at"]
     end
 
     private
@@ -195,10 +193,9 @@ module GitHubChangelogGenerator
     #
     # @param [String] sha SHA to check.
     # @return [Boolean] True if SHA is in the branch git history.
-    def sha_in_release_branch(sha)
+    def sha_in_release_branch?(sha)
       branch = @options[:release_branch] || @fetcher.default_branch
-      shas_in_branch = @fetcher.commits_in_branch(branch)
-      shas_in_branch.include?(sha)
+      @fetcher.commits_in_branch(branch).include?(sha)
     end
   end
 end

@@ -29,9 +29,6 @@ describe GitHubChangelogGenerator::OctoFetcher do
 
     context "when raises Octokit::Forbidden" do
       it "sleeps and retries and then aborts" do
-        retry_limit = GitHubChangelogGenerator::OctoFetcher::MAX_FORBIDDEN_RETRIES - 1
-        allow(fetcher).to receive(:sleep_base_interval).exactly(retry_limit).times.and_return(0)
-
         expect(fetcher).to receive(:sys_abort).with("Exceeded retry limit")
         fetcher.send(:check_github_response) { raise(Octokit::Forbidden) }
       end
@@ -75,12 +72,12 @@ describe GitHubChangelogGenerator::OctoFetcher do
     end
   end
 
-  describe "#get_all_tags" do
+  describe "#fetch_all_tags" do
     context "when github_fetch_tags returns tags" do
       it "returns tags" do
         mock_tags = ["tag"]
         allow(fetcher).to receive(:github_fetch_tags).and_return(mock_tags)
-        expect(fetcher.get_all_tags).to eq(mock_tags)
+        expect(fetcher.fetch_all_tags).to eq(mock_tags)
       end
     end
   end
@@ -550,21 +547,21 @@ describe GitHubChangelogGenerator::OctoFetcher do
         expectations = [
           %w[sha decfe840d1a1b86e0c28700de5362d3365a29555],
           ["url",
-           "https://api.github.com/repos/skywinder/changelog_test/commits/decfe840d1a1b86e0c28700de5362d3365a29555"],
+           "https://api.github.com/repos/github-changelog-generator/changelog_test/commits/decfe840d1a1b86e0c28700de5362d3365a29555"],
           # OLD API: "https://api.github.com/repos/skywinder/changelog_test/git/commits/decfe840d1a1b86e0c28700de5362d3365a29555"],
           ["html_url",
-           "https://github.com/skywinder/changelog_test/commit/decfe840d1a1b86e0c28700de5362d3365a29555"],
+           "https://github.com/github-changelog-generator/changelog_test/commit/decfe840d1a1b86e0c28700de5362d3365a29555"],
           ["author",
-           { "login" => "skywinder", "id" => 3_356_474, "avatar_url" => "https://avatars2.githubusercontent.com/u/3356474?v=4", "gravatar_id" => "", "url" => "https://api.github.com/users/skywinder", "html_url" => "https://github.com/skywinder", "followers_url" => "https://api.github.com/users/skywinder/followers", "following_url" => "https://api.github.com/users/skywinder/following{/other_user}", "gists_url" => "https://api.github.com/users/skywinder/gists{/gist_id}", "starred_url" => "https://api.github.com/users/skywinder/starred{/owner}{/repo}", "subscriptions_url" => "https://api.github.com/users/skywinder/subscriptions", "organizations_url" => "https://api.github.com/users/skywinder/orgs", "repos_url" => "https://api.github.com/users/skywinder/repos", "events_url" => "https://api.github.com/users/skywinder/events{/privacy}", "received_events_url" => "https://api.github.com/users/skywinder/received_events", "type" => "User", "site_admin" => false }],
+           { "login" => "skywinder", "node_id" => "MDQ6VXNlcjMzNTY0NzQ=", "id" => 3_356_474, "avatar_url" => "https://avatars.githubusercontent.com/u/3356474?v=4", "gravatar_id" => "", "url" => "https://api.github.com/users/skywinder", "html_url" => "https://github.com/skywinder", "followers_url" => "https://api.github.com/users/skywinder/followers", "following_url" => "https://api.github.com/users/skywinder/following{/other_user}", "gists_url" => "https://api.github.com/users/skywinder/gists{/gist_id}", "starred_url" => "https://api.github.com/users/skywinder/starred{/owner}{/repo}", "subscriptions_url" => "https://api.github.com/users/skywinder/subscriptions", "organizations_url" => "https://api.github.com/users/skywinder/orgs", "repos_url" => "https://api.github.com/users/skywinder/repos", "events_url" => "https://api.github.com/users/skywinder/events{/privacy}", "received_events_url" => "https://api.github.com/users/skywinder/received_events", "type" => "User", "site_admin" => false }],
           ["committer",
-           { "login" => "skywinder", "id" => 3_356_474, "avatar_url" => "https://avatars2.githubusercontent.com/u/3356474?v=4", "gravatar_id" => "", "url" => "https://api.github.com/users/skywinder", "html_url" => "https://github.com/skywinder", "followers_url" => "https://api.github.com/users/skywinder/followers", "following_url" => "https://api.github.com/users/skywinder/following{/other_user}", "gists_url" => "https://api.github.com/users/skywinder/gists{/gist_id}", "starred_url" => "https://api.github.com/users/skywinder/starred{/owner}{/repo}", "subscriptions_url" => "https://api.github.com/users/skywinder/subscriptions", "organizations_url" => "https://api.github.com/users/skywinder/orgs", "repos_url" => "https://api.github.com/users/skywinder/repos", "events_url" => "https://api.github.com/users/skywinder/events{/privacy}", "received_events_url" => "https://api.github.com/users/skywinder/received_events", "type" => "User", "site_admin" => false }],
+           { "login" => "skywinder", "node_id" => "MDQ6VXNlcjMzNTY0NzQ=", "id" => 3_356_474, "avatar_url" => "https://avatars.githubusercontent.com/u/3356474?v=4", "gravatar_id" => "", "url" => "https://api.github.com/users/skywinder", "html_url" => "https://github.com/skywinder", "followers_url" => "https://api.github.com/users/skywinder/followers", "following_url" => "https://api.github.com/users/skywinder/following{/other_user}", "gists_url" => "https://api.github.com/users/skywinder/gists{/gist_id}", "starred_url" => "https://api.github.com/users/skywinder/starred{/owner}{/repo}", "subscriptions_url" => "https://api.github.com/users/skywinder/subscriptions", "organizations_url" => "https://api.github.com/users/skywinder/orgs", "repos_url" => "https://api.github.com/users/skywinder/repos", "events_url" => "https://api.github.com/users/skywinder/events{/privacy}", "received_events_url" => "https://api.github.com/users/skywinder/received_events", "type" => "User", "site_admin" => false }],
           ["parents",
            [{ "sha" => "7ec095e5e3caceacedabf44d0b9b10da17c92e51",
               "url" =>
-               "https://api.github.com/repos/skywinder/changelog_test/commits/7ec095e5e3caceacedabf44d0b9b10da17c92e51",
+               "https://api.github.com/repos/github-changelog-generator/changelog_test/commits/7ec095e5e3caceacedabf44d0b9b10da17c92e51",
               # OLD API: "https://api.github.com/repos/skywinder/changelog_test/git/commits/7ec095e5e3caceacedabf44d0b9b10da17c92e51",
               "html_url" =>
-               "https://github.com/skywinder/changelog_test/commit/7ec095e5e3caceacedabf44d0b9b10da17c92e51" }]]
+               "https://github.com/github-changelog-generator/changelog_test/commit/7ec095e5e3caceacedabf44d0b9b10da17c92e51" }]]
         ]
 
         expectations.each do |property, value|
